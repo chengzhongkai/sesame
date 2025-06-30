@@ -4,84 +4,90 @@ import aioble
 import bluetooth
 import time
 import struct
+from micropython import const
+# from settings_manager import settings_manager # 不再直接导入全局实例，而是通过构造函数传递或事件总线
+import config
+from event_bus import event_bus # <-- 导入事件总线
 
-# 辅助函数，用于从广告数据中解析名称和UUIDs
-# aioble内部可能也有类似功能，但手动解析有时更灵活
-def decode_name(payload):
-    n = aioble.decode_services.decode_adv_data(payload, 0x09) # AD Type: Complete Local Name
-    return str(n[0], 'utf-8') if n else ''
-
-def decode_services(payload):
-    services = []
-    # Incomplete List of 16-bit Service UUIDs
-    for u in aioble.decode_services.decode_adv_data(payload, 0x02):
-        services.append(bluetooth.UUID(struct.unpack("<h", u)[0]))
-    # Complete List of 16-bit Service UUIDs
-    for u in aioble.decode_services.decode_adv_data(payload, 0x03):
-        services.append(bluetooth.UUID(struct.unpack("<h", u)[0]))
-    # Incomplete List of 128-bit Service UUIDs
-    for u in aioble.decode_services.decode_adv_data(payload, 0x06):
-        services.append(bluetooth.UUID(u))
-    # Complete List of 128-bit Service UUIDs
-    for u in aioble.decode_services.decode_adv_data(payload, 0x07):
-        services.append(bluetooth.UUID(u))
-    return services
-
+# ... (decode_name, decode_services 函数保持不变) ...
 
 class BLEManager:
-    def __init__(self, ble_name="ESP32_Dual_AIOBLE"):
+    # 构造函数中可以注入 event_bus 和 settings_manager
+    def __init__(self, ble_name="ESP32_Dual_AIOBLE", settings_manager_instance=None):
         self.ble_name = ble_name
+        self.settings_manager = settings_manager_instance # 接收注入的设置管理器实例
+        if self.settings_manager is None:
+            raise ValueError("SettingsManager instance must be provided to BLEManager.")
+
         self.peripheral_advertiser_task = None
         self.peripheral_connection = None
         self.peripheral_rx_char = None
         self.peripheral_tx_char = None
 
-        self.central_connections = {} # {device_name: connection_object}
-        self.central_devices_info = {} # {device_name: {'conn': conn_obj, 'services': {}, 'chars': {}}}
+        self.config_service = aioble.Service(config.SERVICE_UUID_CONFIG)
+        self.config_data_char = aioble.Characteristic(
+            self.config_service, config.CHAR_UUID_CONFIG_DATA,
+            read=True, write=True, notify=False, indicate=False
+        )
+        aioble.core.register_services(self.config_service)
+        print("Config service registered.")
+        # 设置特性初始值，确保在PC/手机读取时能获取到当前配置
+        self.config_data_char.write(self.settings_manager.get_all_settings_json().encode())
+
+        self.central_connections = {}
+        self.central_devices_info = {}
         self.target_devices = [
             (config.TARGET_DEVICE_1_NAME, config.TARGET_DEVICE_1_SERVICE_UUID, config.TARGET_DEVICE_1_CHAR_UUID_WRITE, config.TARGET_DEVICE_1_CHAR_UUID_NOTIFY),
             (config.TARGET_DEVICE_2_NAME, config.TARGET_DEVICE_2_SERVICE_UUID, config.TARGET_DEVICE_2_CHAR_UUID_WRITE, config.TARGET_DEVICE_2_CHAR_UUID_NOTIFY)
         ]
         self.desired_central_connections = len(self.target_devices)
 
-        # 初始化aioble
         aioble.core.active(True)
         print("BLE Manager initialized with aioble.")
 
     async def _peripheral_advertiser(self):
-        # 定义外设的服务和特性
-        service = aioble.Service(config.SERVICE_UUID_PERIPHERAL)
+        peripheral_service = aioble.Service(config.SERVICE_UUID_PERIPHERAL)
         self.peripheral_rx_char = aioble.Characteristic(
-            service, config.CHAR_UUID_PERIPHERAL_RX, read=False, write=True, notify=False, indicate=False
+            peripheral_service, config.CHAR_UUID_PERIPHERAL_RX, read=False, write=True, notify=False, indicate=False
         )
         self.peripheral_tx_char = aioble.Characteristic(
-            service, config.CHAR_UUID_PERIPHERAL_TX, read=True, write=False, notify=True, indicate=False
+            peripheral_service, config.CHAR_UUID_PERIPHERAL_TX, read=True, write=False, notify=True, indicate=False
         )
-        aioble.core.register_services(service)
+        aioble.core.register_services(peripheral_service)
 
         print("Peripheral services registered.")
 
         adv_data = aioble.advertising.encode_name(self.ble_name) + \
-                   aioble.advertising.encode_services([config.SERVICE_UUID_PERIPHERAL])
+                   aioble.advertising.encode_services([config.SERVICE_UUID_PERIPHERAL, config.SERVICE_UUID_CONFIG])
 
-        # 启动广播循环
         while True:
             try:
-                # 0 for don't wait for connection, 100_000 for 100ms interval
                 async with aioble.advertising.advertise(
                     100_000, adv_data=adv_data
                 ) as connection:
                     self.peripheral_connection = connection
                     print(f"Peripheral connected by {connection.device}")
-                    # 处理外设连接的读写事件
+                    # 发布连接事件
+                    await event_bus.publish("ble_peripheral_connected", connection.device.addr_hex)
+
                     async for request in connection.requests():
-                        if request.is_peer_write and request.characteristic is self.peripheral_rx_char:
-                            data = await request.read()
-                            print(f"Peripheral received data from {connection.device}: {data.decode()}")
-                            # TODO: 处理接收到的数据，例如通过MQTT转发
-                        # elif request.is_peer_read and request.characteristic is self.peripheral_tx_char:
-                        #     # 如果有读请求，可以发送数据，但通常notify更常用
-                        #     pass
+                        if request.is_peer_write:
+                            if request.characteristic is self.peripheral_rx_char:
+                                data = await request.read()
+                                print(f"Peripheral (App) received data from {connection.device}: {data.decode()}")
+                                # 发布 BLE 外设接收数据事件
+                                await event_bus.publish("ble_peripheral_data_received", data.decode())
+                            elif request.characteristic is self.config_data_char:
+                                data = await request.read()
+                                print(f"Peripheral (Config) received data from {connection.device}: {data.decode()}")
+                                # 发布配置更新请求事件
+                                await event_bus.publish("settings_update_request", data.decode())
+
+                        elif request.is_peer_read and request.characteristic is self.config_data_char:
+                            # 客户端读取配置特性时，返回当前保存的配置
+                            request.write(self.settings_manager.get_all_settings_json().encode())
+                            print(f"Peripheral (Config) sent current settings to {connection.device}.")
+
             except asyncio.CancelledError:
                 print("Peripheral advertising task cancelled.")
                 break
@@ -89,13 +95,14 @@ class BLEManager:
                 print(f"Peripheral advertising error: {e}")
             finally:
                 self.peripheral_connection = None
+                # 发布断开连接事件
+                await event_bus.publish("ble_peripheral_disconnected", connection.device.addr_hex)
                 print("Peripheral disconnected, restarting advertisement.")
-                await asyncio.sleep_ms(100) # 短暂等待以避免立即重新广播
+                await asyncio.sleep_ms(100)
 
     async def peripheral_send_data(self, data):
         if self.peripheral_connection and self.peripheral_tx_char:
             try:
-                # notify() 是一个协程，需要 await
                 await self.peripheral_tx_char.notify(self.peripheral_connection, data)
                 print(f"Peripheral sent data: {data.decode()}")
             except Exception as e:
@@ -107,7 +114,6 @@ class BLEManager:
         while len(self.central_connections) < self.desired_central_connections:
             print("Starting BLE scan for target devices...")
             try:
-                # 扫描设备
                 async with aioble.scan(
                     config.SCAN_DURATION_MS,
                     interval_us=config.SCAN_INTERVAL_US,
@@ -118,7 +124,6 @@ class BLEManager:
                         device_name = result.name()
                         device_services = result.services()
 
-                        # 检查是否是我们想要连接的设备且尚未连接
                         for target_name, target_service_uuid, _, _ in self.target_devices:
                             if device_name == target_name and \
                                 target_service_uuid in device_services and \
@@ -130,11 +135,12 @@ class BLEManager:
                                     self.central_connections[device_name] = connection
                                     self.central_devices_info[device_name] = {'conn': connection, 'services': {}, 'chars': {}}
                                     print(f"Central connected to {device_name} ({addr_str})")
-                                    # 启动该连接的 GATT 发现和数据交互任务
+                                    # 发布主机连接事件
+                                    await event_bus.publish("ble_central_connected", device_name, addr_str)
                                     asyncio.create_task(self._handle_central_connection(device_name, connection))
                                     if len(self.central_connections) >= self.desired_central_connections:
                                         print("All target devices connected, stopping scan.")
-                                        return # 退出扫描循环
+                                        return
                                 except asyncio.TimeoutError:
                                     print(f"Connection to {device_name} timed out.")
                                 except Exception as e:
@@ -147,67 +153,62 @@ class BLEManager:
 
             if len(self.central_connections) < self.desired_central_connections:
                 print("Scan finished, not all target devices connected. Retrying scan in 5 seconds...")
-                await asyncio.sleep(5) # 等待一段时间再重新扫描
+                await asyncio.sleep(5)
 
     async def _handle_central_connection(self, device_name, connection):
         try:
-            # 处理连接断开事件
             async for event, data in connection.events():
                 if event == aioble.Event.DISCONNECTED:
                     print(f"Central disconnected from {device_name}.")
                     if device_name in self.central_connections:
                         del self.central_connections[device_name]
                         del self.central_devices_info[device_name]
-                    # 重新启动扫描和连接，尝试重新连接
+                    # 发布主机断开连接事件
+                    await event_bus.publish("ble_central_disconnected", device_name)
                     asyncio.create_task(self._central_scanner_and_connector())
-                    break # 退出当前连接处理循环
+                    break
 
                 elif event == aioble.Event.GATTC_SERVICE_DISCOVERED:
                     service = data
                     print(f"  Service discovered for {device_name}: {service.uuid}")
                     self.central_devices_info[device_name]['services'][service.uuid] = service
-                    # 发现特性
                     for char in await service.discover_characteristics():
                         print(f"    Characteristic discovered: {char.uuid}")
                         self.central_devices_info[device_name]['chars'][char.uuid] = char
-                        # 如果是通知特性，订阅
                         for target_name, _, _, target_char_notify_uuid in self.target_devices:
                             if target_name == device_name and char.uuid == target_char_notify_uuid:
                                 if char.props & bluetooth.Characteristic.PROP_NOTIFY:
                                     await char.subscribe(notify=True)
                                     print(f"      Subscribed to notifications for {device_name} char {char.uuid}")
-                                    # 启动一个协程来处理通知
                                     asyncio.create_task(self._handle_notification(device_name, char))
-                                break # 找到并处理了通知特性，跳出内部循环
+                                break
 
                 elif event == aioble.Event.GATTC_CHARACTERISTIC_READ:
                     char, data_read = data
                     print(f"  Read from {device_name} char {char.uuid}: {data_read.decode()}")
-                    # TODO: 处理读取到的数据，例如通过MQTT转发
-
-                # aioble内部处理了通知的事件，直接通过char.subscribe()后的异步迭代器获取
+                    # 发布主机读取数据事件
+                    await event_bus.publish("ble_central_data_read", device_name, char.uuid, data_read.decode())
 
         except asyncio.CancelledError:
             print(f"Central connection handler for {device_name} cancelled.")
         except Exception as e:
             print(f"Error handling central connection {device_name}: {e}")
             if device_name in self.central_connections:
-                await self.central_connections[device_name].disconnect() # 断开连接，触发DISCONNECTED事件
+                await self.central_connections[device_name].disconnect()
                 del self.central_connections[device_name]
                 del self.central_devices_info[device_name]
-            asyncio.create_task(self._central_scanner_and_connector()) # 尝试重新连接
+            asyncio.create_task(self._central_scanner_and_connector())
 
     async def _handle_notification(self, device_name, characteristic):
         try:
             async for data in characteristic.notifications():
                 print(f"Central received notification from {device_name} char {characteristic.uuid}: {data.decode()}")
-                # TODO: 处理接收到的通知数据，例如通过MQTT转发
-                # self.mqtt_client.publish(config.MQTT_PUB_TOPIC, f"BLE_NOTIFY_FROM_{device_name}:{data.decode()}")
+                # 发布主机接收通知事件
+                await event_bus.publish("ble_central_notification_received", device_name, characteristic.uuid, data.decode())
         except asyncio.CancelledError:
             print(f"Notification handler for {device_name} cancelled.")
         except Exception as e:
             print(f"Error in notification handler for {device_name}: {e}")
-
 
     async def central_write_data(self, target_device_name, data):
         if target_device_name in self.central_devices_info:
@@ -216,8 +217,7 @@ class BLEManager:
                 if target_name == target_device_name and target_char_write_uuid in device_info['chars']:
                     char = device_info['chars'][target_char_write_uuid]
                     try:
-                        # write() 是一个协程，需要 await
-                        await char.write(data, response=False) # response=False for write_no_response
+                        await char.write(data, response=False)
                         print(f"Central wrote data to {target_device_name}: {data.decode()}")
                         return True
                     except Exception as e:
@@ -230,12 +230,8 @@ class BLEManager:
             return False
 
     async def ble_loop(self):
-        # 启动外设广播任务
         self.peripheral_advertiser_task = asyncio.create_task(self._peripheral_advertiser())
-        # 启动主机扫描和连接任务
         asyncio.create_task(self._central_scanner_and_connector())
 
         while True:
-            # 可以在这里添加一些周期性的BLE相关检查或任务
             await asyncio.sleep(5)
-          

@@ -2,8 +2,10 @@
 from umqtt.simple import MQTTClient
 import uasyncio as asyncio
 import time
+from event_bus import event_bus # <-- 导入事件总线
 
 class MQTTManager:
+    # 构造函数中注入 event_bus
     def __init__(self, broker, client_id):
         self.client = MQTTClient(client_id, broker)
         self.client.set_callback(self._mqtt_callback)
@@ -13,11 +15,10 @@ class MQTTManager:
 
     def _mqtt_callback(self, topic, msg):
         print(f"MQTT Received: Topic='{topic.decode()}', Message='{msg.decode()}'")
-        # 在这里处理MQTT接收到的消息，例如转发到BLE设备
-        # 注意：这里不能直接调用BLEManager的方法，因为回调函数是同步的
-        # 应该将消息放入一个队列，然后在主循环或另一个异步任务中处理
-        # 例如：asyncio.create_task(self.ble_manager.central_write_data("MyBLEDevice1", msg))
-        # 但这需要将ble_manager实例传递进来
+        # 发布 MQTT 消息接收事件
+        # 注意：这里不能 await，因为 _mqtt_callback 是同步的。
+        # event_bus.publish 内部会创建异步任务。
+        asyncio.create_task(event_bus.publish("mqtt_message_received", topic.decode(), msg.decode()))
 
     async def connect(self):
         try:
@@ -25,10 +26,14 @@ class MQTTManager:
             self.client.connect()
             self.connected = True
             print("MQTT connected.")
+            # 发布 MQTT 连接成功事件
+            await event_bus.publish("mqtt_connected")
             return True
         except OSError as e:
             print(f"MQTT connection failed: {e}")
             self.connected = False
+            # 发布 MQTT 连接失败事件
+            await event_bus.publish("mqtt_disconnected")
             return False
 
     def subscribe(self, topic):
@@ -44,12 +49,14 @@ class MQTTManager:
             except Exception as e:
                 print(f"MQTT publish failed: {e}")
                 self.connected = False # 发布失败可能需要重新连接
+                # 发布 MQTT 断开连接事件（或发布失败）
+                asyncio.create_task(event_bus.publish("mqtt_disconnected"))
 
     async def mqtt_loop(self):
         while True:
             if self.connected:
                 try:
-                    self.client.check_msg() # 检查是否有新消息
+                    self.client.check_msg()
                 except OSError as e:
                     print(f"MQTT check_msg failed: {e}, attempting reconnect...")
                     self.connected = False
@@ -58,11 +65,14 @@ class MQTTManager:
                     self.connected = False
 
             if not self.connected:
-                # 尝试重新连接
                 success = await self.connect()
                 if success:
-                    self.subscribe(config.MQTT_SUB_TOPIC) # 重新订阅
-                else:
-                    await asyncio.sleep(5) # 连接失败，等待一段时间再试
+                    # 重新订阅需要在连接成功后由外部逻辑触发，或者在 EventBus 中监听 mqtt_connected 事件来触发
+                    # 这里为了简化，直接在连接成功后订阅
+                    # 更好的方式是 MQTTManager 不知道订阅哪个 topic，由 Main 或一个更高层级的应用逻辑订阅
+                    pass # 不再在这里订阅，让 Main 来订阅
 
-            await asyncio.sleep(1) # 避免忙等待
+                else:
+                    await asyncio.sleep(5)
+
+            await asyncio.sleep(1)
