@@ -34,7 +34,7 @@ async def main():
 
     # --- 启动模块的异步任务 ---
     asyncio.create_task(ble_manager_instance.ble_loop())
-    asyncio.create_task(mqtt_manager_instance.mqtt_loop())
+    # asyncio.create_task(mqtt_manager_instance.mqtt_loop())
 
     # --- 事件订阅与处理逻辑 (核心解耦部分) ---
 
@@ -94,7 +94,7 @@ async def main():
     wifi_connected = await connect_wifi(wifi_ssid, wifi_password)
     if not wifi_connected:
         print("Initial WiFi connection failed. Exiting.")
-        return
+        # return
 
     # 主应用循环
     while True:

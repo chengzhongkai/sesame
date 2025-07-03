@@ -1,4 +1,5 @@
 # event_bus.py
+import asyncio
 class EventBus:
     def __init__(self):
         self._listeners = {} # {event_name: [listener_callback, ...]}
@@ -35,7 +36,7 @@ class EventBus:
             for callback in self._listeners[event_name]:
                 try:
                     # 如果回调是协程，则创建任务；否则直接调用
-                    if asyncio.iscoroutinefunction(callback):
+                    if type(callback).__name__ == 'generator':
                         asyncio.create_task(callback(*args, **kwargs))
                     else:
                         callback(*args, **kwargs)

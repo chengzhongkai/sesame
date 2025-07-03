@@ -6,8 +6,8 @@ from event_bus import event_bus # <-- 导入事件总线
 
 SETTINGS_FILE = "settings.json"
 DEFAULT_SETTINGS = {
-    "wifi_ssid": "YourWiFiSSID",
-    "wifi_password": "YourWiFiPassword",
+    "wifi_ssid": "IODATA-66d09c-2G",
+    "wifi_password": "softdevteam",
     "mqtt_broker": "your_mqtt_broker_ip",
     "mqtt_port": 1883,
     "mqtt_client_id": "esp32_default_client",

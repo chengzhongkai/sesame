@@ -29,7 +29,7 @@ class BLEManager:
             self.config_service, config.CHAR_UUID_CONFIG_DATA,
             read=True, write=True, notify=False, indicate=False
         )
-        aioble.core.register_services(self.config_service)
+        aioble.register_services(self.config_service)
         print("Config service registered.")
         # 设置特性初始值，确保在PC/手机读取时能获取到当前配置
         self.config_data_char.write(self.settings_manager.get_all_settings_json().encode())
@@ -42,7 +42,7 @@ class BLEManager:
         ]
         self.desired_central_connections = len(self.target_devices)
 
-        aioble.core.active(True)
+        # aioble.active(True)
         print("BLE Manager initialized with aioble.")
 
     async def _peripheral_advertiser(self):
@@ -53,40 +53,50 @@ class BLEManager:
         self.peripheral_tx_char = aioble.Characteristic(
             peripheral_service, config.CHAR_UUID_PERIPHERAL_TX, read=True, write=False, notify=True, indicate=False
         )
-        aioble.core.register_services(peripheral_service)
+        aioble.register_services(peripheral_service)
 
         print("Peripheral services registered.")
 
-        adv_data = aioble.advertising.encode_name(self.ble_name) + \
-                   aioble.advertising.encode_services([config.SERVICE_UUID_PERIPHERAL, config.SERVICE_UUID_CONFIG])
+        # adv_data = aioble.advertising.encode_name(self.ble_name) + \
+        #            aioble.advertising.encode_services([config.SERVICE_UUID_CONFIG])
+                #    aioble.advertising.encode_services([config.SERVICE_UUID_PERIPHERAL, config.SERVICE_UUID_CONFIG])
 
         while True:
             try:
-                async with aioble.advertising.advertise(
-                    100_000, adv_data=adv_data
+                print("Starting BLE peripheral advertising...")
+                async with await aioble.advertise(
+                    100_000, 
+                    name = self.ble_name,
+                    services=[config.SERVICE_UUID_CONFIG],
+                    connectable=True 
+                    # adv_data=adv_data
                 ) as connection:
                     self.peripheral_connection = connection
-                    print(f"Peripheral connected by {connection.device}")
+                    print(f"Peripheral connected by {connection.device} ")
                     # 发布连接事件
-                    await event_bus.publish("ble_peripheral_connected", connection.device.addr_hex)
+                    await event_bus.publish("ble_peripheral_connected", connection.device.addr_hex())
 
-                    async for request in connection.requests():
-                        if request.is_peer_write:
-                            if request.characteristic is self.peripheral_rx_char:
-                                data = await request.read()
-                                print(f"Peripheral (App) received data from {connection.device}: {data.decode()}")
-                                # 发布 BLE 外设接收数据事件
-                                await event_bus.publish("ble_peripheral_data_received", data.decode())
-                            elif request.characteristic is self.config_data_char:
-                                data = await request.read()
-                                print(f"Peripheral (Config) received data from {connection.device}: {data.decode()}")
-                                # 发布配置更新请求事件
-                                await event_bus.publish("settings_update_request", data.decode())
+                    while connection.is_connected():
+                        await asyncio.sleep(2)  # 保持连接状态
+   
+                    # async for request in connection.requests():
+                    #         print(f"Received request from ###########{connection.device}: {request}")
+                    #         if request.is_peer_write:
+                    #             if request.characteristic is self.peripheral_rx_char:
+                    #                 data = await request.read()
+                    #                 print(f"Peripheral (App) received data from {connection.device}: {data.decode()}")
+                    #                 # 发布 BLE 外设接收数据事件
+                    #                 await event_bus.publish("ble_peripheral_data_received", data.decode())
+                    #             elif request.characteristic is self.config_data_char:
+                    #                 data = await request.read()
+                    #                 print(f"Peripheral (Config) received data from {connection.device}: {data.decode()}")
+                    #                 # 发布配置更新请求事件
+                    #                 await event_bus.publish("settings_update_request", data.decode())
 
-                        elif request.is_peer_read and request.characteristic is self.config_data_char:
-                            # 客户端读取配置特性时，返回当前保存的配置
-                            request.write(self.settings_manager.get_all_settings_json().encode())
-                            print(f"Peripheral (Config) sent current settings to {connection.device}.")
+                    #         elif request.is_peer_read and request.characteristic is self.config_data_char:
+                    #             # 客户端读取配置特性时，返回当前保存的配置
+                    #             request.write(self.settings_manager.get_all_settings_json().encode())
+                    #             print(f"Peripheral (Config) sent current settings to {connection.device}.")
 
             except asyncio.CancelledError:
                 print("Peripheral advertising task cancelled.")
@@ -96,7 +106,7 @@ class BLEManager:
             finally:
                 self.peripheral_connection = None
                 # 发布断开连接事件
-                await event_bus.publish("ble_peripheral_disconnected", connection.device.addr_hex)
+                await event_bus.publish("ble_peripheral_disconnected", connection.device.addr_hex())
                 print("Peripheral disconnected, restarting advertisement.")
                 await asyncio.sleep_ms(100)
 
@@ -120,9 +130,13 @@ class BLEManager:
                     window_us=config.SCAN_WINDOW_US
                 ) as scanner:
                     async for result in scanner:
-                        addr_str = result.device.addr_hex
+                        addr_str = result.device.addr_hex()
                         device_name = result.name()
                         device_services = result.services()
+                        # manufacturer_data = [f"{man_id:04X}" for man_id, man_data in result.manufacturer()]
+                        # result.adv_data
+                        
+                        print(f"Found device:{result.name()} ({addr_str}), RSSI: {result.rssi}")
 
                         for target_name, target_service_uuid, _, _ in self.target_devices:
                             if device_name == target_name and \
