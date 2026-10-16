@@ -154,7 +154,7 @@ class SesameController:
 
 async def main():
     ################################################################
-    DEVICE_SECRET_HEX = "813f956d0729a31a8620271e23d90822"
+    DEVICE_SECRET_HEX = "<DEVICE_SECRET_HEX>  # pi/config.json 参照（git 管理外）"
     SESAME_MAC_ADDRESS = "FA:EE:B1:3F:13:0F"
         
     controller = None

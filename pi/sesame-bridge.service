@@ -1,0 +1,25 @@
+# Sesame 5 → MQTT ブリッジ（systemd システムサービス）
+# 配置: sudo cp sesame-bridge.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#       sudo systemctl enable --now sesame-bridge
+# ログ: tail -f /home/cheng/sesame-bridge/bridge.log（起動・停止は journalctl -u sesame-bridge）
+[Unit]
+Description=Sesame 5 BLE to MQTT bridge
+After=bluetooth.target network-online.target
+Wants=bluetooth.target network-online.target
+
+[Service]
+Type=simple
+User=cheng
+WorkingDirectory=/home/cheng/sesame-bridge
+# 起動時に rfkill でソフトブロックされていることがあるので解除（root 不要）
+ExecStartPre=-/usr/sbin/rfkill unblock bluetooth
+ExecStart=/usr/bin/python3 /home/cheng/sesame-bridge/sesame_mqtt_bridge.py -c /home/cheng/sesame-bridge/config.json
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+# nohup 時代と同じ bridge.log に追記する（履歴・電池推移の grep がそのまま使える）
+StandardOutput=append:/home/cheng/sesame-bridge/bridge.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

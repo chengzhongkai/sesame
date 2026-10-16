@@ -1,0 +1,18 @@
+# 秘密情報（device secret / MQTT 認証）はローカルのみ
+pi/config.json
+pi/*.local.json
+*.secret
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+# ログ
+*.log
+# 遠隔操作の権限表・nonce DB・監査ログ・秘密鍵
+pi/authz.json
+pi/nonces.db
+pi/audit.log
+pi/*.pem
+pi/keys/
+.DS_Store

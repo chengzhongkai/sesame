@@ -1,0 +1,27 @@
+{
+  "enabled": true,
+  "allowed_actions": ["lock"],
+  "clock_skew_sec": 60,
+  "tz": "Asia/Tokyo",
+  "limits": { "unlock_per_minute": 3, "unlock_per_hour": 20, "lock_per_minute": 10 },
+  "users": {
+    "alice": {
+      "enabled": true,
+      "pubkey": "<Ed25519 公開鍵 base64 32B（authz_admin.py gen-key で生成）>",
+      "history_tag": "MQTT:alice",
+      "grants": [
+        { "locks": ["sesame5_t", "sesame5_b"], "actions": ["lock", "unlock"] }
+      ]
+    },
+    "cleaner": {
+      "enabled": true,
+      "pubkey": "<…>",
+      "history_tag": "MQTT:cleaner",
+      "grants": [
+        { "locks": ["sesame5_b"], "actions": ["unlock", "lock"],
+          "valid_from": "2026-10-01T00:00:00+09:00", "valid_until": "2026-12-31T23:59:59+09:00",
+          "schedule": { "days": ["Tue", "Fri"], "hours": ["09:00-12:00"] } }
+      ]
+    }
+  }
+}

@@ -445,7 +445,7 @@ if __name__ == '__main__':
     print("="*60)
 
     # NIST SP 800-38B Example D.1
-    device_secret = bytes.fromhex("813f956d0729a31a8620271e23d90822")
+    device_secret = bytes.fromhex("<DEVICE_SECRET_HEX>  # pi/config.json 参照（git 管理外）")
     random_code = bytes.fromhex("8e4b3f7c")
     
     # Example 1: 0-byte message

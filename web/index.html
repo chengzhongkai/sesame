@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sesame Remote</title>
+<meta name="description" content="Sesame 5 の状態表示と遠隔施解錠（MQTT ブリッジ用の簡易 Web アプリ）">
+<!-- MQTT over WebSocket / Ed25519 署名（CDN） -->
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --fg:#1b1f24; --muted:#6b7280; --line:#e5e7eb; --ok:#15803d; --warn:#b45309; --bad:#b91c1c; --accent:#2563eb; --lock:#1f2937; --unlock:#d97706; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0f1115; --card:#181b22; --fg:#e6e8ec; --muted:#9aa3b2; --line:#2a2f3a; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --accent:#60a5fa; --lock:#e6e8ec; --unlock:#f59e0b; } }
+  :root[data-theme="dark"] { --bg:#0f1115; --card:#181b22; --fg:#e6e8ec; --muted:#9aa3b2; --line:#2a2f3a; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --accent:#60a5fa; --lock:#e6e8ec; --unlock:#f59e0b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  header { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid var(--line); background:var(--card); position:sticky; top:0; }
+  header h1 { font-size:18px; margin:0; }
+  main { max-width:720px; margin:0 auto; padding:16px; display:grid; gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .muted { color:var(--muted); font-size:13px; }
+  .state { font-size:28px; font-weight:700; }
+  .state.locked { color:var(--lock); } .state.unlocked { color:var(--unlock); } .state.unknown { color:var(--muted); }
+  .pill { display:inline-block; padding:2px 10px; border-radius:999px; border:1px solid var(--line); font-size:12px; color:var(--muted); }
+  .pill.on { color:var(--ok); border-color:var(--ok); } .pill.off { color:var(--bad); border-color:var(--bad); }
+  .btns { display:flex; gap:10px; margin-top:12px; }
+  button { font:inherit; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:12px; padding:12px 16px; cursor:pointer; flex:1; min-height:48px; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.lock { background:var(--lock); color:var(--bg); border-color:var(--lock); }
+  button.unlock { border-color:var(--unlock); color:var(--unlock); position:relative; overflow:hidden; }
+  button.unlock .fill { position:absolute; left:0; top:0; bottom:0; width:0; background:var(--unlock); opacity:.25; transition:width .1s linear; }
+  button.small { flex:0 0 auto; white-space:nowrap; padding:6px 12px; min-height:0; font-size:13px; }
+  input, select { font:inherit; width:100%; padding:10px; border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--fg); }
+  label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  @media (max-width:480px) { .grid2 { grid-template-columns:1fr; } }
+  .log { font:12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; max-height:220px; overflow:auto; white-space:pre-wrap; color:var(--muted); }
+  .result { margin-top:10px; font-size:14px; }
+  .result.ok { color:var(--ok); } .result.bad { color:var(--bad); }
+  code { font:13px ui-monospace, Menlo, monospace; word-break:break-all; }
+  details summary { cursor:pointer; color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sesame Remote</h1>
+  <div class="row" style="gap:8px">
+    <span id="mqttPill" class="pill">MQTT 未接続</span>
+    <span id="bridgePill" class="pill">ブリッジ ?</span>
+    <button class="small" id="btnSettings">設定</button>
+  </div>
+</header>
+<main>
+  <section id="locks" class="card" style="display:none"></section>
+  <section id="empty" class="card muted">設定を入力して接続すると、ブリッジが publish している錠がここに並びます。</section>
+
+  <section class="card" id="settings">
+    <h2 style="margin:0 0 6px;font-size:16px">接続設定</h2>
+    <div class="muted">値はこのブラウザの localStorage にだけ保存されます。</div>
+    <div class="grid2">
+      <div><label>ブローカー WebSocket URL</label><input id="url" placeholder="wss://xxxx.s1.eu.hivemq.cloud:8884/mqtt"></div>
+      <div><label>トピック接頭辞</label><input id="prefix" placeholder="sesame/xxxxxxxx"></div>
+      <div><label>MQTT ユーザー名（アプリ用）</label><input id="mqUser" autocomplete="off"></div>
+      <div><label>MQTT パスワード</label><input id="mqPass" type="password" autocomplete="off"></div>
+      <div><label>ユーザー ID（authz.json の user）</label><input id="user" placeholder="cheng"></div>
+      <div><label>結果待ち秒数</label><input id="timeout" type="number" value="15" min="3" max="60"></div>
+    </div>
+    <div class="btns">
+      <button id="btnConnect">接続して保存</button>
+      <button id="btnDisconnect" class="small">切断</button>
+    </div>
+    <details style="margin-top:14px">
+      <summary>署名鍵（Ed25519）</summary>
+      <div class="muted" style="margin:8px 0">秘密鍵はこの端末のブラウザにだけ保存されます。公開鍵を Pi に登録してください:<br>
+        <code>python3 authz_admin.py add &lt;ユーザー ID&gt; &lt;公開鍵&gt;</code></div>
+      <div>公開鍵: <code id="pubkey">（未生成）</code></div>
+      <div class="btns">
+        <button id="btnGenKey" class="small">鍵を生成</button>
+        <button id="btnCopyKey" class="small">公開鍵をコピー</button>
+        <button id="btnDelKey" class="small">鍵を削除</button>
+      </div>
+    </details>
+  </section>
+
+  <section class="card">
+    <div class="row"><h2 style="margin:0;font-size:16px">ログ</h2><button class="small" id="btnClearLog">消去</button></div>
+    <div id="log" class="log"></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  // ---------- ユーティリティ ----------
+  const $ = (id) => document.getElementById(id);
+  const enc = new TextEncoder();
+  const b64 = (u8) => btoa(String.fromCharCode(...u8));
+  const unb64 = (s) => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const hex = (u8) => [...u8].map(b => b.toString(16).padStart(2, "0")).join("");
+  const rand = (n) => { const u = new Uint8Array(n); crypto.getRandomValues(u); return u; };
+  const log = (m, cls) => { const el = $("log"); const t = new Date().toLocaleTimeString(); el.textContent = `${t} ${m}\n` + el.textContent; };
+  const ago = (iso) => { if (!iso) return "不明"; const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000 | 0);
+    return s < 60 ? `${s} 秒前` : s < 3600 ? `${s / 60 | 0} 分前` : s < 86400 ? `${s / 3600 | 0} 時間前` : `${s / 86400 | 0} 日前`; };
+  const local = (iso) => iso ? new Date(iso).toLocaleString() : "-";
+  let store = {};
+  try { store = JSON.parse(localStorage.getItem("sesame.settings") || "{}"); } catch (e) { store = {}; }
+  const save = () => { try { localStorage.setItem("sesame.settings", JSON.stringify(store)); } catch (e) {} };
+
+  // ---------- 署名鍵 ----------
+  let keyPair = null;
+  function loadKey() {
+    try { const sk = localStorage.getItem("sesame.key"); if (sk) keyPair = nacl.sign.keyPair.fromSecretKey(unb64(sk)); } catch (e) { keyPair = null; }
+    $("pubkey").textContent = keyPair ? b64(keyPair.publicKey) : "（未生成）";
+  }
+  $("btnGenKey").onclick = () => {
+    if (keyPair && !confirm("既存の鍵を置き換えます。Pi 側の登録もやり直しになります。よいですか？")) return;
+    keyPair = nacl.sign.keyPair();
+    try { localStorage.setItem("sesame.key", b64(keyPair.secretKey)); } catch (e) { alert("この環境では鍵を保存できません"); }
+    loadKey(); log("署名鍵を生成しました。公開鍵を Pi に登録してください。");
+  };
+  $("btnCopyKey").onclick = async () => { if (!keyPair) return; try { await navigator.clipboard.writeText(b64(keyPair.publicKey)); log("公開鍵をコピーしました"); } catch (e) { prompt("公開鍵", b64(keyPair.publicKey)); } };
+  $("btnDelKey").onclick = () => { if (confirm("署名鍵を削除します。")) { try { localStorage.removeItem("sesame.key"); } catch (e) {} keyPair = null; loadKey(); } };
+
+  // 署名対象: sig 以外をキー順・空白なしの JSON にした UTF-8（authz.canonical_bytes と同じ）
+  function canonical(cmd) {
+    const keys = ["v", "req_id", "user", "lock", "action", "ts", "nonce"].filter(k => k in cmd).sort();
+    return JSON.stringify(Object.fromEntries(keys.map(k => [k, cmd[k]])));
+  }
+  function signCmd(cmd) { return b64(nacl.sign.detached(enc.encode(canonical(cmd)), keyPair.secretKey)); }
+
+  // ---------- MQTT ----------
+  let client = null, prefix = "";
+  const locks = {};      // alias -> {status, availability, setting}
+  let bridge = { availability: "?", heartbeat: null, authz: null };
+  const pending = {};    // req_id -> {alias, timer}
+
+  function connect() {
+    disconnect();
+    prefix = $("prefix").value.trim().replace(/\/+$/, "");
+    const url = $("url").value.trim();
+    if (!url || !prefix) { alert("WebSocket URL とトピック接頭辞は必須です"); return; }
+    store = { url, prefix, mqUser: $("mqUser").value, mqPass: $("mqPass").value, user: $("user").value.trim(), timeout: +$("timeout").value || 15 };
+    save();
+    client = mqtt.connect(url, { username: store.mqUser || undefined, password: store.mqPass || undefined,
+      clientId: "sesame-web-" + hex(rand(4)), clean: true, keepalive: 30, reconnectPeriod: 3000, protocolVersion: 4 });
+    client.on("connect", () => { setPill("mqttPill", "MQTT 接続中", "on"); log("MQTT 接続");
+      client.subscribe([`${prefix}/+/status`, `${prefix}/+/availability`, `${prefix}/+/setting`, `${prefix}/+/event`, `${prefix}/bridge/#`], { qos: 1 }); });
+    client.on("reconnect", () => setPill("mqttPill", "再接続中", ""));
+    client.on("close", () => setPill("mqttPill", "MQTT 切断", "off"));
+    client.on("error", (e) => { log("MQTT エラー: " + e.message); });
+    client.on("message", onMessage);
+  }
+  function disconnect() { if (client) { try { client.end(true); } catch (e) {} client = null; setPill("mqttPill", "MQTT 未接続", ""); } }
+  function setPill(id, text, cls) { const el = $(id); el.textContent = text; el.className = "pill " + cls; }
+
+  function onMessage(topic, payload) {
+    const rel = topic.slice(prefix.length + 1); const parts = rel.split("/");
+    const text = payload.toString(); let data = text; try { data = JSON.parse(text); } catch (e) {}
+    if (parts[0] === "bridge") {
+      if (parts[1] === "availability") { bridge.availability = text; }
+      else if (parts[1] === "heartbeat") { bridge.heartbeat = data; }
+      else if (parts[1] === "authz") { bridge.authz = data; }
+      renderBridge(); return;
+    }
+    const alias = parts[0], kind = parts[1];
+    if (kind === "cmd" && parts[2] === "result") { onResult(alias, parts[3], data); return; }
+    if (kind === "cmd") return;
+    if (kind === "status" && text === "") {           // retained が削除された錠はカードごと消す
+      delete locks[alias]; const el = document.querySelector(`[data-alias="${alias}"]`); if (el) el.remove(); render(); return;
+    }
+    locks[alias] = locks[alias] || {};
+    if (kind === "event") { log(`[${data.name || alias}] ${data.event === "locked" ? "施錠" : "解錠"}${data.by ? " by " + data.by : ""}`); }
+    else locks[alias][kind] = data;
+    render();
+  }
+
+  // ---------- コマンド ----------
+  function sendCmd(alias, action) {
+    if (!client || !client.connected) { alert("MQTT に接続していません"); return; }
+    if (!keyPair) { alert("先に署名鍵を生成し、公開鍵を Pi に登録してください"); return; }
+    if (!store.user) { alert("ユーザー ID を設定してください"); return; }
+    const cmd = { v: 1, req_id: hex(rand(16)), user: store.user, lock: alias, action, ts: Math.floor(Date.now() / 1000), nonce: hex(rand(12)) };
+    cmd.sig = signCmd(cmd);
+    const resultTopic = `${prefix}/${alias}/cmd/result/${cmd.req_id}`;
+    setResult(alias, `${action === "lock" ? "施錠" : "解錠"}を送信中…`, "");
+    // 結果トピックを購読してから publish（取りこぼし防止）
+    client.subscribe(resultTopic, { qos: 1 }, (err) => {
+      if (err) { setResult(alias, "購読に失敗: " + err.message, "bad"); return; }
+      client.publish(`${prefix}/${alias}/cmd`, JSON.stringify(cmd), { qos: 1 });
+      log(`送信 ${action} → ${alias} (${cmd.req_id.slice(0, 8)})`);
+      pending[cmd.req_id] = { alias, timer: setTimeout(() => {
+        delete pending[cmd.req_id]; client.unsubscribe(resultTopic);
+        setResult(alias, "結果が返りません（ブリッジ停止、遠隔操作無効、または権限なしで購読外）", "bad");
+      }, store.timeout * 1000) };
+    });
+  }
+  function onResult(alias, reqId, r) {
+    const p = pending[reqId]; if (p) { clearTimeout(p.timer); delete pending[reqId]; client.unsubscribe(`${prefix}/${alias}/cmd/result/${reqId}`); }
+    if (r.ok) setResult(alias, `${r.action === "lock" ? "施錠" : "解錠"}しました（${r.elapsed_sec}s）`, "ok");
+    else setResult(alias, `失敗: ${r.code || "?"} ${r.message || ""}`, "bad");
+    log(`結果 ${alias}: ${r.ok ? "OK" : r.code} ${r.message || ""}`);
+  }
+  function setResult(alias, text, cls) { const el = document.querySelector(`[data-result="${alias}"]`); if (el) { el.textContent = text; el.className = "result " + cls; } }
+
+  // 解錠は長押し（1.2 秒）で誤タップを防ぐ
+  function attachLongPress(btn, onFire) {
+    let timer = null, start = 0; const fill = btn.querySelector(".fill");
+    const reset = () => { clearTimeout(timer); timer = null; if (fill) fill.style.width = "0"; };
+    const begin = (e) => { e.preventDefault(); if (btn.disabled) return; start = Date.now(); if (fill) { fill.style.transition = "width 1.2s linear"; fill.style.width = "100%"; }
+      timer = setTimeout(() => { reset(); onFire(); }, 1200); };
+    const cancel = () => { if (timer) { reset(); if (fill) fill.style.transition = "width .1s"; } };
+    btn.addEventListener("pointerdown", begin); btn.addEventListener("pointerup", cancel);
+    btn.addEventListener("pointerleave", cancel); btn.addEventListener("pointercancel", cancel);
+  }
+
+  // ---------- 描画 ----------
+  function renderBridge() {
+    const hb = bridge.heartbeat; const online = bridge.availability === "online";
+    const rc = bridge.authz && bridge.authz.remote_control;
+    setPill("bridgePill", online ? `ブリッジ online（${hb ? ago(hb.ts) : "?"}）` : "ブリッジ offline", online ? "on" : "off");
+    document.querySelectorAll("[data-rc]").forEach(el => { el.textContent = rc ? (rc === "active" ? `遠隔操作: 有効（許可: ${(bridge.authz.allowed_actions || []).join(", ")}）` : `遠隔操作: ${rc}`) : "遠隔操作: 状態不明"; });
+    document.querySelectorAll("button[data-action]").forEach(b => { b.disabled = !(online && rc === "active" && (bridge.authz.allowed_actions || []).includes(b.dataset.action)); });
+  }
+  function render() {
+    const aliases = Object.keys(locks).filter(a => locks[a].status);
+    $("locks").style.display = aliases.length ? "" : "none"; $("empty").style.display = aliases.length ? "none" : "";
+    const existing = new Set([...$("locks").querySelectorAll("[data-alias]")].map(e => e.dataset.alias));
+    for (const a of aliases) {
+      if (!existing.has(a)) {
+        const div = document.createElement("div"); div.dataset.alias = a; div.style.cssText = "padding:8px 0;border-top:1px solid var(--line)";
+        div.innerHTML = `<div class="row"><div><div class="muted" data-f="name"></div><div class="state" data-f="state"></div></div>
+            <div style="text-align:right"><div data-f="battery"></div><div class="muted" data-f="ble"></div></div></div>
+          <div class="muted" data-f="times"></div>
+          <div class="btns"><button class="lock" data-action="lock">施錠</button><button class="unlock" data-action="unlock"><span class="fill"></span>長押しで解錠</button></div>
+          <div class="result" data-result="${a}"></div><div class="muted" data-rc></div>`;
+        div.querySelector('[data-action="lock"]').onclick = () => sendCmd(a, "lock");
+        attachLongPress(div.querySelector('[data-action="unlock"]'), () => sendCmd(a, "unlock"));
+        $("locks").appendChild(div);
+      }
+      const d = $("locks").querySelector(`[data-alias="${a}"]`), st = locks[a].status, av = locks[a].availability;
+      const f = (k) => d.querySelector(`[data-f="${k}"]`);
+      f("name").textContent = st.name || a;
+      const s = st.state === "LOCKED" ? "locked" : st.state === "UNLOCKED" ? "unlocked" : "unknown";
+      f("state").textContent = st.state === "LOCKED" ? "🔒 施錠" : st.state === "UNLOCKED" ? "🔓 解錠" : "⚠ " + st.state; f("state").className = "state " + s;
+      f("battery").textContent = `電池 ${st.battery_pct}% (${st.voltage}V)` + (st.battery_critical ? " ⚠" : "");
+      f("ble").textContent = `BLE: ${av || "?"}`;
+      f("times").textContent = `最終更新 ${local(st.ts)}（${ago(st.ts)}） / 最終変化 ${local(st.last_change_ts)}`;
+    }
+    renderBridge();
+  }
+  setInterval(render, 15000);
+
+  // ---------- 初期化 ----------
+  $("btnConnect").onclick = connect; $("btnDisconnect").onclick = disconnect;
+  $("btnClearLog").onclick = () => $("log").textContent = "";
+  $("btnSettings").onclick = () => { const s = $("settings"); s.style.display = s.style.display === "none" ? "" : "none"; };
+  for (const k of ["url", "prefix", "mqUser", "mqPass", "user", "timeout"]) if (store[k] != null) $(k).value = store[k];
+  loadKey();
+  if (store.url && store.prefix) { connect(); $("settings").style.display = "none"; }
+})();
+</script>
+</body>
+</html>

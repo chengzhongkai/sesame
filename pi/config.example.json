@@ -1,0 +1,39 @@
+{
+  "mqtt": {
+    "host": "broker.emqx.io",
+    "port": 8883,
+    "tls": true,
+    "username": null,
+    "password": null,
+    "client_id": "sesame-bridge-chengrasp",
+    "topic_prefix": "sesame/<RANDOM_HEX_24>",
+    "qos": 1
+  },
+  "devices": [
+    {
+      "alias": "upper_lock",
+      "name": "<アプリでの名前（シェアリンクの n=）>",
+      "mac": "CC:AC:29:15:5A:E6",
+      "secret": "<DEVICE_SECRET_HEX_32>"
+    },
+    {
+      "alias": "lower_lock",
+      "name": "<アプリでの名前>",
+      "mac": "FA:EE:B1:3F:13:0F",
+      "secret": "<DEVICE_SECRET_HEX_32>"
+    }
+  ],
+  "ble": {
+    "scan_timeout_sec": 20,
+    "connect_timeout_sec": 20,
+    "reconnect_min_sec": 3,
+    "reconnect_max_sec": 60,
+    "status_republish_sec": 0
+  },
+  "log_level": "INFO",
+  "remote_control": {
+    "authz_file": "authz.json",
+    "audit_log": "audit.log",
+    "cmd_timeout_sec": 8
+  }
+}
