@@ -18,8 +18,9 @@ pgrep -af sesame_mqtt_bridge
 for p in $(pgrep -f sesame_mqtt_bridge); do ls -l /proc/$p/fd/1 /proc/$p/fd/2; done
 ```
 
-- 現状は nohup 起動（systemd 未登録、2026-10-18 時点）。ログは `~/sesame-bridge/bridge.log`。
-- Pi が再起動するとブリッジは止まり、その間の履歴は残らない。最終起動は `uptime -s` で確認。
+- 2026-10-18 から systemd サービス `sesame-bridge`（自動起動・異常終了時は 5 秒後に再起動）。ログは `~/sesame-bridge/bridge.log` に追記。
+- 状態確認は `systemctl status sesame-bridge`、再起動は `sudo systemctl restart sesame-bridge`。
+- 手で止めるときは `pkill` ではなく `sudo systemctl stop sesame-bridge`（`Restart=always` のため pkill しても再起動される）。
 
 ## 3. 開閉イベントを抽出
 
@@ -83,7 +84,7 @@ ssh cheng@192.168.0.229 '~/sesame-bridge/battery_trend.sh'
 - 1 週間で数 % 以内の減り: 対策は効いている。
 - 1 日 1% 以上のペースで減っている: 接続間隔が戻っていないか確認する（`~/sesame-bridge/ble_lowpower.sh status`、`ps -o args= -C bluetoothd` に `-P gap` があるか）。
 
-Pi を再起動したときは、ブリッジを手で起動し直す（systemd 未登録の間は nohup 起動のため）。
+Pi を再起動しても、ブリッジは systemd で自動起動する（2026-10-18 登録）。
 
 ## 補足
 
