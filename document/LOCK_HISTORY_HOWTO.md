@@ -4,8 +4,10 @@ Raspberry Pi（chengRasp）上の MQTT ブリッジのログから、Sesame の�
 
 ## 1. Pi に入る
 
-- **ssh**: `ssh cheng@240b:10:ef27:ab00:dea6:32ff:feab:7777`
-  - Pi はグローバル IPv6 専用。Mac 側にも IPv6 が必要（iPhone テザリング等の IPv4 のみの回線では `No route to host`）。
+- **同じ AP（自宅 LAN）にいるとき**: `ssh cheng@192.168.0.229`
+  - DHCP で IP が変わったら、MAC アドレスから探す: `ping -c1 192.168.0.255 >/dev/null; arp -an | grep -i dc:a6:32:ab:77:77`
+- **外から ssh**: `ssh cheng@240b:10:ef27:ab00:dea6:32ff:feab:7777`
+  - Mac 側にもグローバル IPv6 が必要（iPhone テザリング等の IPv4 のみの回線では `No route to host`）。
 - **Raspberry Pi Connect**: https://connect.raspberrypi.com/devices → chengRasp → Remote shell
   - Raspberry Pi ID でのログインが必要。
 
@@ -16,7 +18,7 @@ pgrep -af sesame_mqtt_bridge
 for p in $(pgrep -f sesame_mqtt_bridge); do ls -l /proc/$p/fd/1 /proc/$p/fd/2; done
 ```
 
-- 現状は nohup 起動（systemd 未登録）。ログは `~/sesame-bridge/bridge.log`。
+- 現状は nohup 起動（systemd 未登録、2026-10-18 時点）。ログは `~/sesame-bridge/bridge.log`。
 - Pi が再起動するとブリッジは止まり、その間の履歴は残らない。最終起動は `uptime -s` で確認。
 
 ## 3. 開閉イベントを抽出
@@ -52,14 +54,36 @@ grep sesame5_t ~/sesame-bridge/audit.log 2>/dev/null | tail -20
 ## 5. 電池残量の推移
 
 ```bash
-# 日ごとの電池残量（その日の最初と最後の値）
-grep "sesame5_t\] " ~/sesame-bridge/bridge.log | grep -o "^[0-9-]* .*約[0-9]*%" | awk '{d=$1; match($0,/約[0-9]+%/); p=substr($0,RSTART,RLENGTH); if(!(d in f)) f[d]=p; l[d]=p} END{for(d in f) print d, f[d], "→", l[d]}' | sort
+# 2 台の日別の電池残量（その日の最初と最後の値と電圧）
+~/sesame-bridge/battery_trend.sh
+
+# Mac から 1 行で（同じ AP にいるとき）
+ssh cheng@192.168.0.229 '~/sesame-bridge/battery_trend.sh'
 ```
 
-2026-10-07〜16 は Sesame 5 T が約 3.4%/日 減った（71% → 40%）。
+スクリプトは `pi/battery_trend.sh`（Pi には 2026-10-18 に配置済み）。
+
+- % は電圧からの推定値。負荷が減ると電圧が戻り、% が上がって見えることがある。
+- ブリッジは状態が変わったときだけ記録するため、開閉のない日は行が出ない。
+
+### 経緯と基準値（BLE 省電力対策の効果確認用）
+
+2026-10-07〜16 朝は 2 台とも約 3.3〜3.7%/日 減っていた（T 71% → 41%、B 91% → 58%）。
 原因は BlueZ の gap プラグインで、錠が GATT で公開する推奨値（10〜12.5ms）に接続を更新し、錠自身の 300〜500ms 要求を拒否していた。
-2026-10-16 に `pi/ble_lowpower.sh apply`（bluetoothd -P gap + main.conf の [LE]）と Pi 再起動で、T 390ms・B 460ms になった。
-Pi を再起動したときはブリッジを手で起動し直す（nohup 起動のため）。
+2026-10-16 午前に `pi/ble_lowpower.sh apply`（bluetoothd -P gap + main.conf の [LE]）と Pi 再起動で、T 390ms・B 460ms になった。
+
+| 日付 | Sesame 5 T | Sesame 5 B | 備考 |
+|---|---|---|---|
+| 10/16 朝（対策前） | 41%（5.55V） | 58%（5.64V） | |
+| 10/16 夜 | 48%（5.59V） | 65%（5.67V） | 負荷が減って電圧が戻った |
+| 10/17 | 49% → 49%（5.60V） | 66% → 66%（5.68V） | 横ばい |
+
+**1 週間後（2026-10-24 ごろ）の判定の目安**（10/17 の値と比べる）
+
+- 1 週間で数 % 以内の減り: 対策は効いている。
+- 1 日 1% 以上のペースで減っている: 接続間隔が戻っていないか確認する（`~/sesame-bridge/ble_lowpower.sh status`、`ps -o args= -C bluetoothd` に `-P gap` があるか）。
+
+Pi を再起動したときは、ブリッジを手で起動し直す（systemd 未登録の間は nohup 起動のため）。
 
 ## 補足
 
